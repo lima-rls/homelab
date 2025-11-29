@@ -1,0 +1,162 @@
+---
+- name: Bootstrap local system with required tools
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+
+  tasks:
+    - name: Determine package manager
+      set_fact:
+        pkg_mgr: |
+          {% if ansible_facts.os_family == 'Debian' %}apt{% elif ansible_facts.os_family == 'RedHat' and (ansible_facts.distribution_major_version | int) >= 8 %}dnf{% elif ansible_facts.os_family == 'RedHat' %}yum{% else %}unknown{% endif %}
+
+    - name: Install base packages (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        name:
+          - curl
+          - unzip
+          - git
+          - python3
+          - python3-pip
+        state: present
+      when: pkg_mgr == 'apt'
+      become: true
+
+    - name: Install base packages (RHEL/CentOS/Fedora dnf)
+      dnf:
+        name:
+          - curl
+          - unzip
+          - git
+          - python3
+          - python3-pip
+        state: present
+      when: pkg_mgr == 'dnf'
+      become: true
+
+    - name: Install base packages (RHEL/CentOS yum)
+      yum:
+        name:
+          - curl
+          - unzip
+          - git
+          - python3
+          - python3-pip
+        state: present
+      when: pkg_mgr == 'yum'
+      become: true
+
+    - name: Install Ansible (prefer system package, else pipx)
+      block:
+        - name: Install Ansible via apt
+          apt:
+            name: ansible
+            state: present
+          when: pkg_mgr == 'apt'
+          become: true
+
+        - name: Install Ansible via dnf
+          dnf:
+            name: ansible
+            state: present
+          when: pkg_mgr == 'dnf'
+          become: true
+
+        - name: Install Ansible via yum
+          yum:
+            name: ansible
+            state: present
+          when: pkg_mgr == 'yum'
+          become: true
+
+        - name: Ensure pipx is installed (Debian/Ubuntu)
+          apt:
+            name: pipx
+            state: present
+          when: pkg_mgr == 'apt'
+          become: true
+
+        - name: Ensure pipx is installed (RHEL/CentOS/Fedora dnf)
+          dnf:
+            name: pipx
+            state: present
+          when: pkg_mgr == 'dnf'
+          become: true
+
+        - name: Ensure pipx is installed (RHEL/CentOS yum)
+          yum:
+            name: pipx
+            state: present
+          when: pkg_mgr == 'yum'
+          become: true
+
+        - name: Install Ansible via pipx (user)
+          ansible.builtin.shell: |
+            set -e
+            export PATH="$HOME/.local/bin:$PATH"
+            pipx install --include-deps ansible || pipx upgrade ansible
+          args:
+            executable: /bin/bash
+          when: ansible_facts.packages is not defined or ansible_facts.packages.ansible is not defined
+
+    - name: Add HashiCorp repo and install Terraform (Debian/Ubuntu)
+      block:
+        - name: Add HashiCorp GPG key
+          ansible.builtin.apt_key:
+            url: https://apt.releases.hashicorp.com/gpg
+            state: present
+          become: true
+
+        - name: Add HashiCorp apt repository
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64] https://apt.releases.hashicorp.com {{ ansible_facts.distribution_release | lower }} main"
+            state: present
+          become: true
+
+        - name: Install Terraform
+          apt:
+            update_cache: yes
+            name: terraform
+            state: present
+          become: true
+      when: pkg_mgr == 'apt'
+
+    - name: Add HashiCorp repo and install Terraform (RHEL/CentOS/Fedora)
+      block:
+        - name: Add HashiCorp repo file
+          get_url:
+            url: https://rpm.releases.hashicorp.com/{{ ansible_facts.distribution | lower }}/hashicorp.repo
+            dest: /etc/yum.repos.d/hashicorp.repo
+          become: true
+
+        - name: Install Terraform via dnf
+          dnf:
+            name: terraform
+            state: present
+          when: pkg_mgr == 'dnf'
+          become: true
+
+        - name: Install Terraform via yum
+          yum:
+            name: terraform
+            state: present
+          when: pkg_mgr == 'yum'
+          become: true
+      when: pkg_mgr in ['dnf', 'yum']
+
+    - name: Verify tool versions
+      shell: |
+        set -e
+        echo "python3: $(python3 --version 2>&1)"
+        echo "pip3: $(pip3 --version 2>&1)"
+        echo "ansible: $(ansible --version 2>&1 | head -n1)"
+        echo "terraform: $(terraform version 2>&1 | head -n1)"
+      args:
+        executable: /bin/bash
+      register: verify_out
+      changed_when: false
+
+    - name: Show verification output
+      debug:
+        msg: "{{ verify_out.stdout_lines }}"

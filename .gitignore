@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Ansible
+.ansible/
+.retry
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+terraform.tfvars
+terraform.tfvars.json
+
+# Editors/OS
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Ansible
+*.retry
+.vault_pass
+ansible/group_vars/*/vault.yml
+ansible/host_vars/*/vault.yml
+*.log
+
+# Secrets and credentials
+.env
+.env.*
+secrets/
+*.pem
+*.key
+*.crt
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
