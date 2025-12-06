@@ -1,16 +1,26 @@
-# VM única dedicada ao ambiente de desenvolvimento.
-# Ajuste vmid, template e storage de acordo com o seu ambiente.
+# Lista das VMs que serão mantidas via Ansible.
+# Ajuste vmid (opcional), template e storage conforme o seu ambiente.
 proxmox_api_host: "192.168.100.2"
 proxmox_validate_certs: false
 
 proxmox_vms:
   - name: dev-server
-    vmid: 200
     node: homelab
-    template: TEMPLATE-UBT-SERVER #todo correigir template
+    template: TEMPLATE-UBT-SERVER
     cores: 2
     memory_mb: 1024
     disk_gb: 20
     net0: "virtio,bridge=vmbr0"
     tags: "dev"
     description: "Ambiente de desenvolvimento (app + db)"
+
+  - name: dev-truenas
+    node: homelab
+    template: TEMPLATE-TRUENAS
+    cores: 2
+    memory_mb: 8192
+    disk_gb: 60
+    storage: local
+    net0: "virtio,bridge=vmbr0"
+    tags: "dev"
+    description: "Appliance TrueNAS executando em SSD"
