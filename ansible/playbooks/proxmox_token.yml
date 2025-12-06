@@ -1,0 +1,47 @@
+---
+- name: Provisionar usuário e token de API no Proxmox
+  hosts: proxmox
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - ../vault/proxmox_access.yml
+
+  tasks:
+    - name: Verificar se o usuário já existe
+      ansible.builtin.command: >-
+        pveum user list --enabled 1
+      register: proxmox_users
+      changed_when: false
+
+    - name: Criar usuário Proxmox (se necessário)
+      ansible.builtin.command: >-
+        pveum user add {{ proxmox_user }}@{{ proxmox_realm }} -password {{ proxmox_password }}
+      when: proxmox_users.stdout is not search("{{ proxmox_user }}@{{ proxmox_realm }}")
+
+    - name: Verificar tokens existentes para o usuário
+      ansible.builtin.command: >-
+        pveum user token list {{ proxmox_user }}@{{ proxmox_realm }}
+      register: proxmox_tokens
+      failed_when: proxmox_tokens.rc not in [0, 2]
+      changed_when: false
+
+    - name: Criar token de API (se necessário)
+      ansible.builtin.command: >-
+        pveum user token add {{ proxmox_user }}@{{ proxmox_realm }} {{ proxmox_token_name }}
+      register: created_token
+      when: proxmox_tokens.stdout is not search("{{ proxmox_token_name }}")
+
+    - name: Salvar secret do token recém-criado
+      ansible.builtin.debug:
+        msg: "Token Secret: {{ created_token.stdout_lines | default([]) | select('search', 'value') | list }}"
+      when: created_token is defined
+
+    - name: Garantir permissão {{ proxmox_role }} em / com propagação
+      ansible.builtin.command: >-
+        pveum aclmod / -user {{ proxmox_user }}@{{ proxmox_realm }} -role {{ proxmox_role }} -propagate 1
+
+    - name: Reiniciar serviço pvedaemon para aplicar permissões
+      ansible.builtin.service:
+        name: pvedaemon
+        state: restarted

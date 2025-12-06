@@ -1,0 +1,52 @@
+---
+- name: Provisionar VM de desenvolvimento no Proxmox
+  hosts: localhost
+  gather_facts: false
+
+  collections:
+    - community.general
+
+  vars_files:
+    - ../vault/proxmox_access.yml
+    - ../group_vars/proxmox_vms.yml
+
+  vars:
+    proxmox_api_user_full: "{{ proxmox_user }}@{{ proxmox_realm }}"
+    proxmox_api_token_id_full: "{{ proxmox_api_user_full }}!{{ proxmox_token_name }}"
+    proxmox_debug_auth: false
+
+  tasks:
+    - name: Exibir token utilizado para API
+      ansible.builtin.debug:
+        msg: "Token: {{ proxmox_api_token_id_full }}"
+      when: proxmox_debug_auth | bool
+
+    - name: Garantir VM de desenvolvimento presente
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user_full }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: "{{ proxmox_validate_certs | default(false) }}"
+        node: "{{ item.node }}"
+        vmid: "{{ item.vmid }}"
+        name: "{{ item.name }}"
+        clone: "{{ item.template }}"
+        full: true
+        cores: "{{ item.cores }}"
+        memory: "{{ item.memory_mb }}"
+        sockets: 1
+        scsi: "scsi0={{ item.storage | default('local-lvm') }}:{{ item.disk_gb }}G"
+        net: "net0={{ item.net0 | default('virtio,bridge=vmbr0') }}"
+        tags: "{{ item.tags | default('') }}"
+        description: "{{ item.description | default('') }}"
+        onboot: true
+        agent: 1
+        state: present
+        timeout: 300
+        force: false
+      loop: "{{ proxmox_vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+
