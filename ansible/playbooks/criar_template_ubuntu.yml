@@ -1,0 +1,92 @@
+---
+- name: Criar template Ubuntu cloud-init no Proxmox
+  hosts: proxmox
+  gather_facts: false
+
+  vars:
+    template_vmid: 9000
+    template_name: TEMPLATE-UBT-SERVER
+    template_storage: local-lvm
+    template_cores: 2
+    template_memory: 1024
+    template_disk_size: 32
+    # Imagem cloud Ubuntu (será baixada automaticamente se não existir)
+    template_image_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    template_image_filename: "noble-server-cloudimg-amd64.img"
+    template_image_path: "/var/lib/vz/template/iso/{{ template_image_filename }}"
+
+  tasks:
+    - name: Verificar se template já existe
+      ansible.builtin.command: "qm status {{ template_vmid }}"
+      register: template_check
+      failed_when: false
+      changed_when: false
+
+    - name: Bloco de criação do template
+      when: template_check.rc != 0
+      block:
+        - name: Verificar se imagem cloud existe localmente
+          ansible.builtin.stat:
+            path: "{{ template_image_path }}"
+          register: image_stat
+
+        - name: Baixar imagem cloud se não existe (cache local)
+          ansible.builtin.get_url:
+            url: "{{ template_image_url }}"
+            dest: "{{ template_image_path }}"
+            mode: '0644'
+          when: not image_stat.stat.exists
+
+        - name: Criar VM base
+          ansible.builtin.command: >
+            qm create {{ template_vmid }}
+            --name {{ template_name }}
+            --memory {{ template_memory }}
+            --cores {{ template_cores }}
+            --net0 virtio,bridge=vmbr0
+            --scsihw virtio-scsi-pci
+
+        - name: Importar disco da imagem cloud
+          ansible.builtin.command: >
+            qm importdisk {{ template_vmid }} {{ template_image_path }} {{ template_storage }}
+          register: import_result
+
+        - name: Configurar disco principal
+          ansible.builtin.command: >
+            qm set {{ template_vmid }}
+            --scsi0 {{ template_storage }}:vm-{{ template_vmid }}-disk-0
+
+        - name: Adicionar drive cloud-init
+          ansible.builtin.command: >
+            qm set {{ template_vmid }}
+            --ide2 {{ template_storage }}:cloudinit
+
+        - name: Configurar boot e console
+          ansible.builtin.command: >
+            qm set {{ template_vmid }}
+            --boot c
+            --bootdisk scsi0
+            --serial0 socket
+            --vga serial0
+
+        - name: Habilitar qemu-guest-agent
+          ansible.builtin.command: >
+            qm set {{ template_vmid }}
+            --agent enabled=1
+
+        - name: Redimensionar disco (opcional)
+          ansible.builtin.command: >
+            qm resize {{ template_vmid }} scsi0 {{ template_disk_size }}G
+          when: template_disk_size > 10
+
+        - name: Converter em template
+          ansible.builtin.command: "qm template {{ template_vmid }}"
+
+        - name: Exibir sucesso
+          ansible.builtin.debug:
+            msg: "Template {{ template_name }} (VMID {{ template_vmid }}) criado com sucesso!"
+
+    - name: Template já existe
+      ansible.builtin.debug:
+        msg: "Template {{ template_name }} (VMID {{ template_vmid }}) já existe, pulando criação."
+      when: template_check.rc == 0
