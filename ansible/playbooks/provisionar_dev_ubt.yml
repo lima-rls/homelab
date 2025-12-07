@@ -46,8 +46,12 @@
         cores: "{{ item.cores }}"
         memory: "{{ item.memory_mb }}"
         sockets: 1
+        cpu: "{{ item.cpu | default(omit) }}"
         scsi: "scsi0={{ item.storage | default('local-lvm') }}:{{ item.disk_gb }}G"
         net: "net0={{ item.net0 | default('virtio,bridge=vmbr0') }}"
+        ipconfig:
+          ipconfig0: "{{ item.ipconfig0 if item.ipconfig0 is defined else omit }}"
+        nameservers: "{{ item.nameservers if item.nameservers is defined else omit }}"
         tags: "{{ item.tags | default('') }}"
         description: "{{ item.description | default('') }}"
         onboot: true
@@ -55,6 +59,38 @@
         state: present
         timeout: 300
         force: false
+      register: vm_created
+      loop: "{{ target_vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Aguardar propagação da VM
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Iniciar VM para validação básica
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user_full }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: "{{ proxmox_validate_certs | default(false) }}"
+        node: "{{ item.node }}"
+        name: "{{ item.name }}"
+        state: started
+        timeout: 300
+      loop: "{{ target_vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Aguardar boot completo
+      ansible.builtin.pause:
+        seconds: 45
+        prompt: "Aguardando boot completo da VM..."
+
+    - name: Exibir informações finais
+      ansible.builtin.debug:
+        msg: "VM {{ item.name }} provisionada e iniciada. IP: {{ item.ipconfig0.split(',')[0].split('=')[1] if item.ipconfig0 is defined else 'DHCP' }}"
       loop: "{{ target_vms }}"
       loop_control:
         label: "{{ item.name }}"
