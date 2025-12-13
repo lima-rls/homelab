@@ -1,0 +1,68 @@
+---
+# Playbook para LISTAR datasets ZFS do TrueNAS via API (sem SSH)
+- name: Listar datasets e propriedades no TrueNAS (API)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "{{ playbook_dir }}/../vault/proxmox_access.yml"
+
+  vars:
+    truenas_api_base: "{{ truenas_api_url | default('https://192.168.100.20/api/v2.0') }}"
+    truenas_api_token: "{{ truenas_api_key }}"
+
+  tasks:
+    - name: Validar configuração de API
+      ansible.builtin.assert:
+        that:
+          - truenas_api_base is match('^https?://')
+          - truenas_api_token is defined
+          - truenas_api_token | length > 0
+        fail_msg: "Configure 'truenas_api_url' e 'truenas_api_key' no vault proxmox_access.yml"
+        success_msg: "Configuração de API válida."
+
+    - name: Tentar conexão simples com API (system info)
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/system/info"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 10
+      register: api_ping
+      failed_when: api_ping.status not in [200]
+      ignore_errors: true
+
+    - name: Diagnóstico de conectividade
+      ansible.builtin.debug:
+        msg: "Ping API status={{ api_ping.status | default('N/A') }} erro={{ api_ping.msg | default('') }} url={{ truenas_api_base }}/system/info"
+
+    - name: Consultar datasets via API
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/pool/dataset"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 20
+      register: datasets_resp
+
+    - name: Verificar resposta da API
+      ansible.builtin.assert:
+        that:
+          - datasets_resp.status == 200
+          - datasets_resp.json is defined
+        fail_msg: "Falha na API TrueNAS: status {{ datasets_resp.status }} msg={{ datasets_resp.msg | default('') }}"
+
+    - name: Exibir contagem de datasets
+      ansible.builtin.debug:
+        msg: "Encontrados {{ datasets_resp.json | length }} datasets"
+
+    - name: Listar nomes dos datasets
+      ansible.builtin.debug:
+        msg: "Nomes: {{ datasets_resp.json | map(attribute='name') | list }}"
+
+    # Removido: não salvar saída em arquivo JSON
