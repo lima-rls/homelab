@@ -1,5 +1,5 @@
 ---
-- name: Criar template Ubuntu cloud-init no Proxmox
+- name: Preparar template Ubuntu cloud-init no Proxmox
   hosts: proxmox
   gather_facts: false
 
@@ -10,10 +10,11 @@
     template_cores: 2
     template_memory: 1024
     template_disk_size: 32
-    # Imagem cloud Ubuntu (será baixada automaticamente se não existir)
     template_image_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
     template_image_filename: "noble-server-cloudimg-amd64.img"
     template_image_path: "/var/lib/vz/template/iso/{{ template_image_filename }}"
+    ciuser: ubuntu
+    ssh_public_key_file: ~/.ssh/id_rsa.pub
 
   tasks:
     - name: Verificar se template já existe
@@ -22,7 +23,7 @@
       failed_when: false
       changed_when: false
 
-    - name: Bloco de criação do template
+    - name: BLOCO 1 - Criar template
       when: template_check.rc != 0
       block:
         - name: Verificar se imagem cloud existe localmente
@@ -30,7 +31,7 @@
             path: "{{ template_image_path }}"
           register: image_stat
 
-        - name: Baixar imagem cloud se não existe (cache local)
+        - name: Baixar imagem cloud Ubuntu (cache local)
           ansible.builtin.get_url:
             url: "{{ template_image_url }}"
             dest: "{{ template_image_path }}"
@@ -74,19 +75,65 @@
             qm set {{ template_vmid }}
             --agent enabled=1
 
-        - name: Redimensionar disco (opcional)
+        - name: Redimensionar disco
           ansible.builtin.command: >
             qm resize {{ template_vmid }} scsi0 {{ template_disk_size }}G
           when: template_disk_size > 10
 
-        - name: Converter em template
-          ansible.builtin.command: "qm template {{ template_vmid }}"
-
-        - name: Exibir sucesso
+        - name: Exibir progresso - template criado
           ansible.builtin.debug:
-            msg: "Template {{ template_name }} (VMID {{ template_vmid }}) criado com sucesso!"
+            msg: "✓ Template VM criado (VMID {{ template_vmid }})"
+
+    - name: BLOCO 2 - Configurar cloud-init
+      block:
+        - name: Ler chave SSH pública local
+          ansible.builtin.slurp:
+            src: "{{ ssh_public_key_file }}"
+          register: ssh_key_content
+          delegate_to: localhost
+
+        - name: Configurar usuário padrão cloud-init
+          ansible.builtin.command: >
+            qm set {{ template_vmid }} --ciuser {{ ciuser }}
+
+        - name: Criar arquivo temporário com chave SSH
+          ansible.builtin.copy:
+            content: "{{ ssh_key_content.content | b64decode }}"
+            dest: /tmp/sshkey_temp.pub
+            mode: '0600'
+
+        - name: Configurar chave SSH no template
+          ansible.builtin.command: >
+            qm set {{ template_vmid }} --sshkeys /tmp/sshkey_temp.pub
+
+        - name: Remover arquivo temporário
+          ansible.builtin.file:
+            path: /tmp/sshkey_temp.pub
+            state: absent
+
+        - name: Regenerar imagem cloud-init
+          ansible.builtin.command: >
+            qm cloudinit update {{ template_vmid }}
+
+        - name: Exibir progresso - cloud-init configurado
+          ansible.builtin.debug:
+            msg: "✓ Cloud-init configurado (usuário: {{ ciuser }}, SSH key: configurada)"
+
+    - name: Converter em template (se não é template ainda)
+      ansible.builtin.command: "qm template {{ template_vmid }}"
+      register: template_convert
+      failed_when: template_convert.rc not in [0, 1]
+      changed_when: template_convert.rc == 0
+
+    - name: Exibir sucesso final
+      ansible.builtin.debug:
+        msg: |
+          ✓✓✓ Template {{ template_name }} (VMID {{ template_vmid }}) pronto para uso!
+          
+          Próximo passo: provisionar VMs via
+          ansible-playbook ansible/playbooks/provisionar_dev_ubt.yml --ask-vault-pass
 
     - name: Template já existe
       ansible.builtin.debug:
-        msg: "Template {{ template_name }} (VMID {{ template_vmid }}) já existe, pulando criação."
+        msg: "✓ Template {{ template_name }} (VMID {{ template_vmid }}) já existe"
       when: template_check.rc == 0
