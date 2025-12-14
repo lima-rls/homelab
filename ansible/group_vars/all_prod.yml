@@ -1,0 +1,68 @@
+# Variáveis PROD - Homelab
+# Arquivo centralizado para todas as variáveis de produção
+# ATENÇÃO: Criptografar com ansible-vault antes de commitar
+
+# API Proxmox
+proxmox_api_host: "192.168.100.2"
+proxmox_validate_certs: false
+
+# Docker
+docker_memory: "5GB"
+docker_cpu_limit: 4
+
+# TrueNAS
+truenas_pool: "repool"
+truenas_datasets_base: "/mnt/repool/prod"
+
+# Aplicações
+frigate_cameras: 4
+use_mock_data: false
+enable_monitoring: true
+
+# MQTT (Frigate) - MUDE EM PRODUÇÃO!
+mqtt_password: "prod_frigate_mqtt_SECURE"
+
+# VMs Prod
+proxmox_vms:
+  - name: prod-apps
+    node: homelab
+    template: TEMPLATE-UBT-SERVER
+    cpu: host
+    cores: 4
+    memory_mb: 5120
+    disk_gb: 50
+    net0: "virtio,bridge=vmbr0"
+    ipconfig0: "ip=192.168.100.100/24,gw=192.168.100.1"
+    nameservers: "192.168.100.1"
+    tags: "prod,apps"
+    description: "Servidor de aplicações"
+
+  - name: prod-db
+    node: homelab
+    template: TEMPLATE-UBT-SERVER
+    cpu: host
+    cores: 2
+    memory_mb: 2048
+    disk_gb: 30
+    net0: "virtio,bridge=vmbr0"
+    ipconfig0: "ip=192.168.100.101/24,gw=192.168.100.1"
+    nameservers: "192.168.100.1"
+    vmid: 200
+    vmid: 201
+    tags: "prod,database"
+    description: "Servidor de banco de dados"
+
+  - name: truenas
+    node: homelab
+    template: TEMPLATE-TRUENAS
+    cpu: host
+    cores: 2
+    memory_mb: 8192
+    disk_gb: 60
+    storage: local
+    net0: "virtio,bridge=vmbr0"
+    ipconfig0: "ip=192.168.100.20/24,gw=192.168.100.1"
+    nameservers: "192.168.100.1"
+    vmid: 150
+    tags: "prod,storage"
+    description: "Appliance TrueNAS (ZFS)"

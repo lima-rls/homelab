@@ -1,0 +1,127 @@
+---
+# Playbook para ajustar permissões de datasets do TrueNAS via API
+# Configura permissões adequadas para NFS shares
+# Execução:
+#   ansible-playbook -i inventory/dev.ini -e env=dev playbooks/infrastructure/truenas_fix_permissions.yml --ask-vault-pass
+#   ansible-playbook -i inventory/prod.ini -e env=prod playbooks/infrastructure/truenas_fix_permissions.yml --ask-vault-pass
+
+- name: Ajustar permissões de datasets TrueNAS
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "../../vault/proxmox_access.yml"
+    - "../../group_vars/all_{{ env | default('dev') }}.yml"
+
+  vars:
+    truenas_api_base: "{{ truenas_api_url | default('https://192.168.100.20/api/v2.0') }}"
+    truenas_api_token: "{{ truenas_api_key }}"
+    
+    # Permissões padrão para datasets NFS
+    # UID/GID 0 (root) para acesso total, mode 777 para permitir escrita
+    default_uid: 0
+    default_gid: 0
+    default_mode: "777"
+
+  tasks:
+    - name: Validar variáveis
+      ansible.builtin.assert:
+        that:
+          - truenas_api_base is match('^https?://')
+          - truenas_api_token is defined
+          - truenas_datasets_base is defined
+        fail_msg: "Configure truenas_api_key no vault e truenas_datasets_base em group_vars"
+        success_msg: "✓ Variáveis válidas"
+
+    - name: Exibir dataset alvo
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "🔧 AJUSTANDO PERMISSÕES DO DATASET"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Ambiente: {{ env | default('dev') }}"
+          - "Dataset: {{ truenas_datasets_base }}"
+          - "UID: {{ default_uid }}"
+          - "GID: {{ default_gid }}"
+          - "Mode: {{ default_mode }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: Ajustar permissões do dataset via API
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/filesystem/setperm"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          path: "{{ truenas_datasets_base }}"
+          mode: "{{ default_mode }}"
+          uid: "{{ default_uid }}"
+          gid: "{{ default_gid }}"
+          options:
+            recursive: true
+            traverse: false
+      register: setperm_resp
+      failed_when: setperm_resp.status not in [200, 201, 202]
+
+    - name: Aguardar job de permissões
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/core/get_jobs?id={{ setperm_resp.json }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+      register: job_status
+      until: job_status.json[0].state in ['SUCCESS', 'FAILED']
+      retries: 30
+      delay: 2
+      failed_when: job_status.json[0].state == 'FAILED'
+
+    - name: Verificar resultado do job
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "✅ PERMISSÕES AJUSTADAS COM SUCESSO"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Dataset: {{ truenas_datasets_base }}"
+          - "Job ID: {{ setperm_resp.json }}"
+          - "Status: {{ job_status.json[0].state }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      when: job_status.json[0].state == 'SUCCESS'
+
+    - name: Reiniciar serviço NFS para aplicar mudanças
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/service/restart"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          service: "nfs"
+      register: restart_resp
+
+    - name: Aguardar reinício do NFS
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Resumo final
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "📋 RESUMO DA OPERAÇÃO"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "✓ Permissões ajustadas em {{ truenas_datasets_base }}"
+          - "✓ Serviço NFS reiniciado"
+          - "✓ Dataset pronto para montagem NFS com escrita"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - ""
+          - "Próximo passo: Execute o playbook do Frigate"
+          - "  ansible-playbook -i inventory/{{ env }}.ini -e env={{ env }} -e target_hosts=<host> playbooks/apps/frigate.yml --ask-vault-pass"

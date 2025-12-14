@@ -7,8 +7,8 @@
     - community.general
 
   vars_files:
-    - ../vault/proxmox_access.yml
-    - ../group_vars/proxmox_vms.yml
+    - ../../vault/proxmox_access.yml
+    - ../../group_vars/all_{{ env | default('dev') }}.yml
 
   vars:
     proxmox_api_user_full: "{{ proxmox_user }}@{{ proxmox_realm }}"
@@ -45,6 +45,7 @@
         full: true
         cores: "{{ item.cores }}"
         memory: "{{ item.memory_mb }}"
+        balloon: "{{ item.balloon | default(omit) }}"
         sockets: 1
         cpu: "{{ item.cpu | default(omit) }}"
         scsi: "scsi0={{ item.storage | default('local-lvm') }}:{{ item.disk_gb }}G"

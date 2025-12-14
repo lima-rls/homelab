@@ -1,0 +1,74 @@
+---
+# Playbook para criar datasets no TrueNAS via API
+# Cria: tank-dev/frigate e tank-prod/frigate
+# Execução:
+#   ansible-playbook -i inventory/dev.ini playbooks/infrastructure/criar_datasets_truenas.yml --ask-vault-pass
+
+- name: Criar datasets Frigate no TrueNAS
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "{{ playbook_dir }}/../vault/proxmox_access.yml"
+
+  vars:
+    truenas_api_base: "https://192.168.100.20/api/v2.0"
+    truenas_api_token: "{{ truenas_api_key }}"
+
+  tasks:
+    - name: Debug - Mostrar variáveis
+      ansible.builtin.debug:
+        msg:
+          - "API URL: {{ truenas_api_base }}"
+          - "API Token: {{ truenas_api_token | default('NÃO DEFINIDO') }}"
+
+    - name: Criar dataset tank-dev/frigate
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/pool/dataset"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "tank-dev/frigate"
+      register: create_dev_resp
+      failed_when: 
+        - create_dev_resp.status not in [200, 201]
+        - "'already exists' not in create_dev_resp.msg | default('')"
+      changed_when: create_dev_resp.status in [200, 201]
+
+    - name: Debug - Resposta dataset dev
+      ansible.builtin.debug:
+        msg: "Status: {{ create_dev_resp.status }}, Response: {{ create_dev_resp.json | default(create_dev_resp.msg) }}"
+
+    - name: Criar dataset tank-prod/frigate
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/pool/dataset"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "tank-prod/frigate"
+      register: create_prod_resp
+      failed_when:
+        - create_prod_resp.status not in [200, 201]
+        - "'already exists' not in create_prod_resp.msg | default('')"
+      changed_when: create_prod_resp.status in [200, 201]
+
+    - name: Debug - Resposta dataset prod
+      ansible.builtin.debug:
+        msg: "Status: {{ create_prod_resp.status }}, Response: {{ create_prod_resp.json | default(create_prod_resp.msg) }}"
+
+    - name: Exibir resultados
+      ansible.builtin.debug:
+        msg:
+          - "Dataset dev/frigate: {{ 'CRIADO' if create_dev_resp.changed else 'JÁ EXISTIA' }}"
+          - "Dataset prod/frigate: {{ 'CRIADO' if create_prod_resp.changed else 'JÁ EXISTIA' }}"

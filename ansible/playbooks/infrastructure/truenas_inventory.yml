@@ -1,0 +1,217 @@
+---
+# Playbook para inventariar recursos do TrueNAS via API
+# Lista pools, datasets, shares NFS/SMB e informações do sistema
+# Execução:
+#   ansible-playbook -i inventory/dev.ini playbooks/infrastructure/truenas_inventory.yml --ask-vault-pass
+
+- name: Inventário TrueNAS - Pools, Datasets e Shares
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "../../vault/proxmox_access.yml"
+
+  vars:
+    truenas_api_base: "{{ truenas_api_url | default('https://192.168.100.20/api/v2.0') }}"
+    truenas_api_token: "{{ truenas_api_key }}"
+
+  tasks:
+    - name: Validar configuração de API
+      ansible.builtin.assert:
+        that:
+          - truenas_api_base is match('^https?://')
+          - truenas_api_token is defined
+          - truenas_api_token | length > 0
+        fail_msg: "Configure 'truenas_api_url' e 'truenas_api_key' no vault"
+        success_msg: "✓ Configuração de API válida"
+
+    # ========== SYSTEM INFO ==========
+    - name: Consultar informações do sistema
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/system/info"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 10
+      register: system_info
+      failed_when: system_info.status != 200
+
+    - name: "[SYSTEM] Informações do TrueNAS"
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "🖥️  SISTEMA TRUENAS"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Hostname: {{ system_info.json.hostname | default('N/A') }}"
+          - "Versão: {{ system_info.json.version | default('N/A') }}"
+          - "Uptime: {{ system_info.json.uptime_seconds | default(0) | int / 86400 | round(1) }} dias"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # ========== POOLS ==========
+    - name: Consultar pools ZFS
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/pool"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 20
+      register: pools_resp
+      failed_when: pools_resp.status != 200
+
+    - name: "[POOLS] Listar pools ZFS"
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "💾 POOLS ZFS ({{ pools_resp.json | length }})"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: "[POOLS] Detalhes de cada pool"
+      ansible.builtin.debug:
+        msg:
+          - "Pool: {{ item.name }}"
+          - "  Status: {{ item.status | default('N/A') }}"
+          - "  Tamanho: {{ (item.size | default(0) / 1024 / 1024 / 1024) | round(2) }} GB"
+          - "  Usado: {{ (item.allocated | default(0) / 1024 / 1024 / 1024) | round(2) }} GB"
+          - "  Livre: {{ (item.free | default(0) / 1024 / 1024 / 1024) | round(2) }} GB"
+          - "  Health: {{ item.healthy | default(false) | ternary('✓ Saudável', '✗ Problema') }}"
+          - "---"
+      loop: "{{ pools_resp.json }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ========== DATASETS ==========
+    - name: Consultar datasets ZFS
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/pool/dataset"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 20
+      register: datasets_resp
+      failed_when: datasets_resp.status != 200
+
+    - name: "[DATASETS] Listar datasets"
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "📁 DATASETS ZFS ({{ datasets_resp.json | length }})"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: "[DATASETS] Detalhes de cada dataset"
+      ansible.builtin.debug:
+        msg:
+          - "Dataset: {{ item.name }}"
+          - "  Tipo: {{ item.type | default('filesystem') }}"
+          - "  Mountpoint: {{ item.mountpoint | default('N/A') }}"
+          - "  Usado: {{ (item.used.parsed | default(0) / 1024 / 1024 / 1024) | round(2) }} GB"
+          - "  Disponível: {{ (item.available.parsed | default(0) / 1024 / 1024 / 1024) | round(2) }} GB"
+          - "---"
+      loop: "{{ datasets_resp.json }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.type == 'FILESYSTEM'
+
+    # ========== NFS SHARES ==========
+    - name: Consultar shares NFS
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/sharing/nfs"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 20
+      register: nfs_resp
+      failed_when: nfs_resp.status != 200
+
+    - name: "[NFS] Listar shares NFS"
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "🌐 SHARES NFS ({{ nfs_resp.json | length }})"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: "[NFS] Detalhes de cada share"
+      ansible.builtin.debug:
+        msg:
+          - "Share NFS #{{ item.id }}"
+          - "  Path: {{ item.path }}"
+          - "  Enabled: {{ item.enabled | ternary('✓ Sim', '✗ Não') }}"
+          - "  Networks: {{ item.networks | default([]) | join(', ') or 'Todas' }}"
+          - "  Hosts: {{ item.hosts | default([]) | join(', ') or 'Todos' }}"
+          - "  Maproot User: {{ item.maproot_user | default('N/A') }}"
+          - "  Mapall User: {{ item.mapall_user | default('N/A') }}"
+          - "---"
+      loop: "{{ nfs_resp.json }}"
+      loop_control:
+        label: "Share #{{ item.id }}"
+      when: nfs_resp.json | length > 0
+
+    - name: "[NFS] Nenhum share configurado"
+      ansible.builtin.debug:
+        msg: "⚠️  Nenhum share NFS configurado"
+      when: nfs_resp.json | length == 0
+
+    # ========== SMB SHARES ==========
+    - name: Consultar shares SMB/CIFS
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/sharing/smb"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+        timeout: 20
+      register: smb_resp
+      failed_when: smb_resp.status != 200
+
+    - name: "[SMB] Listar shares SMB"
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "📂 SHARES SMB/CIFS ({{ smb_resp.json | length }})"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: "[SMB] Detalhes de cada share"
+      ansible.builtin.debug:
+        msg:
+          - "Share SMB: {{ item.name }}"
+          - "  Path: {{ item.path }}"
+          - "  Enabled: {{ item.enabled | ternary('✓ Sim', '✗ Não') }}"
+          - "  Purpose: {{ item.purpose | default('N/A') }}"
+          - "  Guest Access: {{ item.guestok | default(false) | ternary('✓ Permitido', '✗ Negado') }}"
+          - "---"
+      loop: "{{ smb_resp.json }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: smb_resp.json | length > 0
+
+    - name: "[SMB] Nenhum share configurado"
+      ansible.builtin.debug:
+        msg: "⚠️  Nenhum share SMB/CIFS configurado"
+      when: smb_resp.json | length == 0
+
+    # ========== RESUMO FINAL ==========
+    - name: "[RESUMO] Inventário completo"
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "📊 RESUMO DO INVENTÁRIO"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Pools: {{ pools_resp.json | length }}"
+          - "Datasets: {{ datasets_resp.json | length }}"
+          - "Shares NFS: {{ nfs_resp.json | length }}"
+          - "Shares SMB: {{ smb_resp.json | length }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

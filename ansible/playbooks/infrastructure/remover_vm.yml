@@ -7,8 +7,8 @@
     - community.general
 
   vars_files:
-    - ../vault/proxmox_access.yml
-    - ../group_vars/proxmox_vms.yml
+    - ../../vault/proxmox_access.yml
+    - ../../group_vars/all_{{ env | default('dev') }}.yml
 
   vars:
     proxmox_api_user_full: "{{ proxmox_user }}@{{ proxmox_realm }}"
@@ -44,10 +44,25 @@
       ansible.builtin.set_fact:
         target_vm: "{{ target_vms[0] }}"
 
+    - name: Consultar VM no Proxmox para obter vmid quando ausente
+      community.general.proxmox_vm_info:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user_full }}"
+        api_token_id: "{{ proxmox_token_name }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: "{{ proxmox_validate_certs | default(false) }}"
+      register: vm_info
+      when: target_vm.vmid is not defined
+
+    - name: Definir vmid obtido via API
+      ansible.builtin.set_fact:
+        target_vm_vmid: "{{ (vm_info.proxmox_vms | selectattr('name', 'equalto', target_vm.name) | list | first).vmid }}"
+      when: target_vm.vmid is not defined
+
     - name: Garantir que vmid está definido para remoção
       ansible.builtin.assert:
         that:
-          - target_vm.vmid is defined
+          - target_vm.vmid is defined or target_vm_vmid is defined
         fail_msg: "Defina o vmid da VM {{ target_vm_name }} em proxmox_vms antes de apagar"
 
     - name: Determinar se requer confirmação
@@ -79,7 +94,7 @@
         api_token_secret: "{{ proxmox_token_secret }}"
         validate_certs: "{{ proxmox_validate_certs | default(false) }}"
         node: "{{ target_vm.node }}"
-        vmid: "{{ target_vm.vmid }}"
+        vmid: "{{ target_vm.vmid | default(target_vm_vmid) }}"
         state: absent
         force: true
         timeout: 300

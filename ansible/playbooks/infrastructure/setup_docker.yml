@@ -1,8 +1,12 @@
 ---
-- name: Configurar Docker na VM de desenvolvimento
-  hosts: dev-server
+- name: Configurar Docker
+  hosts: "{{ target_hosts | default('docker_hosts') }}"
   become: true
   gather_facts: true
+
+  vars_files:
+    - ../../group_vars/all_{{ env | default('dev') }}.yml
+    - ../../vault/prod_secrets.yml
 
   tasks:
     - name: Atualizar cache do apt

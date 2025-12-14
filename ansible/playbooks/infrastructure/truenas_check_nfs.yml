@@ -1,0 +1,62 @@
+---
+# Playbook para verificar e habilitar serviço NFS no TrueNAS
+- name: Verificar serviço NFS do TrueNAS
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "../../vault/proxmox_access.yml"
+
+  vars:
+    truenas_api_base: "{{ truenas_api_url | default('https://192.168.100.20/api/v2.0') }}"
+    truenas_api_token: "{{ truenas_api_key }}"
+
+  tasks:
+    - name: Verificar status do serviço NFS
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/service?service=nfs"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Accept: "application/json"
+        validate_certs: false
+      register: nfs_status
+
+    - name: Exibir status NFS
+      ansible.builtin.debug:
+        msg:
+          - "Serviço NFS:"
+          - "  Estado: {{ nfs_status.json[0].state }}"
+          - "  Enabled: {{ nfs_status.json[0].enable }}"
+
+    - name: Iniciar serviço NFS se não estiver rodando
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/service/start"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          service: "nfs"
+      when: nfs_status.json[0].state != "RUNNING"
+      register: nfs_start
+
+    - name: Habilitar NFS no boot se não estiver
+      ansible.builtin.uri:
+        url: "{{ truenas_api_base }}/service/id/{{ nfs_status.json[0].id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ truenas_api_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          enable: true
+      when: not nfs_status.json[0].enable
+
+    - name: Resultado
+      ansible.builtin.debug:
+        msg: "✓ Serviço NFS está {{ nfs_status.json[0].state }} e {{ 'habilitado' if nfs_status.json[0].enable else 'desabilitado' }} no boot"

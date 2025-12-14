@@ -1,0 +1,126 @@
+---
+# Playbook simples para ajustar permissões do dataset "dev" no TrueNAS via API
+# Requer: TrueNAS API v2.0 habilitada e API key com permissão de filesystem
+# Execução: ansible-playbook ansible/playbooks/truenas_perms_dev.yml --ask-vault-pass
+
+- name: Ajustar permissões do dataset dev no TrueNAS
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "{{ playbook_dir }}/../vault/proxmox_access.yml"  # substitua se tiver vault dedicado
+
+  vars:
+    truenas_api_url: "{{ truenas_api_url | default('https://192.168.100.20/api/v2.0') }}"
+    truenas_api_key: "{{ truenas_api_key }}"
+
+    # Usuário/grupo de serviço para o dataset dev
+    truenas_user_name: "dev"
+    truenas_user_fullname: "Dev Service"
+    truenas_user_uid: 3000
+    truenas_group_name: "dev"
+    truenas_group_gid: 3000
+    truenas_user_password: ""   # opcional; vazio cria bloqueado/sem login
+
+    # Dataset e permissão desejada
+    truenas_dataset_path: "/mnt/repool/dev"
+    truenas_perm_uid: "{{ truenas_user_uid }}"
+    truenas_perm_gid: "{{ truenas_group_gid }}"
+    truenas_perm_mode: "0775"
+    truenas_recursive: true
+
+  tasks:
+    - name: Validar variáveis obrigatórias
+      ansible.builtin.assert:
+        that:
+          - truenas_api_url is match('^https?://')
+          - truenas_api_key | length > 0
+          - truenas_dataset_path | length > 0
+          - truenas_user_name | length > 0
+          - truenas_group_name | length > 0
+        fail_msg: "Defina truenas_api_url, truenas_api_key, dataset, user/group"
+
+    - name: Garantir grupo dev (idempotente)
+      ansible.builtin.uri:
+        url: "{{ truenas_api_url }}/group"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_key }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ truenas_group_name }}"
+          gid: "{{ truenas_group_gid }}"
+        status_code:
+          - 200
+          - 201
+          - 409  # já existe
+      register: group_resp
+
+    - name: Garantir usuário dev (idempotente)
+      ansible.builtin.uri:
+        url: "{{ truenas_api_url }}/user"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_key }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          username: "{{ truenas_user_name }}"
+          full_name: "{{ truenas_user_fullname }}"
+          uid: "{{ truenas_user_uid }}"
+          group: "{{ truenas_group_gid }}"
+          groups: []
+          password: "{{ truenas_user_password }}"
+          sshpubkey: ""
+          shell: "/usr/sbin/nologin"
+          locked: true
+        status_code:
+          - 200
+          - 201
+          - 409  # já existe
+      register: user_resp
+
+    - name: Garantir que o dataset existe (mkdir é idempotente)
+      ansible.builtin.uri:
+        url: "{{ truenas_api_url }}/filesystem/mkdir"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_key }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          path: "{{ truenas_dataset_path }}"
+      register: mkdir_resp
+      failed_when: (mkdir_resp.status | default(0)) not in [200, 201, 202, 409, 422]
+
+    - name: Ajustar permissões no dataset
+      ansible.builtin.uri:
+        url: "{{ truenas_api_url }}/filesystem/setperm"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_key }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          path: "{{ truenas_dataset_path }}"
+          mode: "{{ truenas_perm_mode }}"
+          uid: "{{ truenas_perm_uid }}"
+          gid: "{{ truenas_perm_gid }}"
+          options:
+            recursive: "{{ 'true' if truenas_recursive else 'false' }}"
+      register: perm_resp
+      failed_when: (perm_resp.status | default(0)) not in [200, 201, 202]
+
+    - name: Exibir resultado
+      ansible.builtin.debug:
+        msg: "Permissões aplicadas em {{ truenas_dataset_path }} com UID={{ truenas_perm_uid }} GID={{ truenas_perm_gid }} mode={{ truenas_perm_mode }} (recursivo={{ truenas_recursive }})"

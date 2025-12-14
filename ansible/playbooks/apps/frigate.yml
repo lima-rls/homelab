@@ -1,0 +1,233 @@
+---
+# Playbook ambiente-agnóstico da aplicação Frigate
+# Suporta dev e prod via -e env=dev/prod e -e target_hosts=...
+# Objetivo: montar NFS do dataset apropriado (TrueNAS) e subir containers Frigate + MQTT
+# Requer collections: community.docker
+#   ansible-galaxy collection install community.docker
+#
+# Execução:
+#   ansible-playbook -i inventory/dev.ini -e env=dev -e target_hosts=dev-server playbooks/apps/frigate.yml
+#   ansible-playbook -i inventory/prod.ini -e env=prod -e target_hosts=prod-apps playbooks/apps/frigate.yml --ask-vault-pass
+
+- name: Aplicação Frigate (ambiente-agnóstico)
+  hosts: "{{ target_hosts | default('docker_hosts') }}"
+  become: yes
+  gather_facts: yes
+
+  vars_files:
+    - "../../group_vars/all_{{ env | default('dev') }}.yml"
+
+  vars:
+    # Parâmetros NFS
+    truenas_nfs_server: "192.168.100.20"
+    nfs_mount_point: "/mnt/frigate-data"
+    
+    # Dataset dinâmico baseado no env (carregado de all_*.yml)
+    # all_dev.yml: truenas_datasets_base: "/mnt/repool/dev"
+    # all_prod.yml: truenas_datasets_base: "/mnt/repool/prod"
+    # Monta o dataset base, depois cria subdiretório frigate dentro dele
+    truenas_nfs_export: "{{ truenas_datasets_base }}"
+
+    # Garantir usuário/permissão no dataset via API do TrueNAS (executa no nó de controle)
+    truenas_api_url: "https://192.168.100.20/api/v2.0"
+    truenas_dataset_path: "{{ truenas_nfs_export }}"
+    truenas_perm_uid: 0
+    truenas_perm_gid: 0
+    truenas_perm_mode: "0775"
+    truenas_manage_perms: false  # true para aplicar via API; exige API key válida em vault
+
+    frigate_media_dir: "{{ nfs_mount_point }}/frigate"
+    frigate_config_dir: "/etc/frigate"
+
+    # MQTT
+    mqtt_enable: true
+    mqtt_user: "frigate"
+    # mqtt_password movido para vault (loaded via group_vars/all_*.yml ou vault)
+
+    # Imagens Docker
+    docker_frigate_image: "ghcr.io/blakeblackshear/frigate:stable"
+    docker_mqtt_image: "eclipse-mosquitto:2"
+
+  pre_tasks:
+    - name: Atualizar índice de pacotes
+      ansible.builtin.apt:
+        update_cache: yes
+      when: ansible_os_family == 'Debian'
+
+    - name: Validar variáveis da API do TrueNAS
+      when: truenas_manage_perms
+      ansible.builtin.assert:
+        that:
+          - truenas_api_url is match('^https?://')
+          - truenas_api_key | length > 0
+          - truenas_dataset_path | length > 0
+        fail_msg: "Defina truenas_api_url, truenas_api_key e truenas_dataset_path"
+        success_msg: "API do TrueNAS configurada"
+
+    - name: Criar diretório do dataset no TrueNAS (via API)
+      when: truenas_manage_perms
+      delegate_to: localhost
+      become: false
+      ansible.builtin.uri:
+        url: "{{ truenas_api_url }}/filesystem/mkdir"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_key }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          path: "{{ truenas_dataset_path }}"
+      register: mkdir_resp
+      failed_when: (mkdir_resp.status | default(0)) not in [200, 201, 202, 409]
+
+    - name: Ajustar permissões no dataset do TrueNAS (via API)
+      when: truenas_manage_perms
+      delegate_to: localhost
+      become: false
+      ansible.builtin.uri:
+        url: "{{ truenas_api_url }}/filesystem/setperm"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ truenas_api_key }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          path: "{{ truenas_dataset_path }}"
+          mode: "{{ truenas_perm_mode }}"
+          uid: "{{ truenas_perm_uid }}"
+          gid: "{{ truenas_perm_gid }}"
+          options:
+            recursive: true
+      register: perm_resp
+      failed_when: (perm_resp.status | default(0)) not in [200, 201, 202]
+
+  tasks:
+    - name: Instalar utilitários NFS
+      ansible.builtin.package:
+        name: ["nfs-common"]
+        state: present
+
+    - name: Criar ponto de montagem NFS
+      ansible.builtin.file:
+        path: "{{ nfs_mount_point }}"
+        state: directory
+        mode: '0755'
+
+    - name: Montar NFS do TrueNAS
+      ansible.builtin.mount:
+        src: "{{ truenas_nfs_server }}:{{ truenas_nfs_export }}"
+        path: "{{ nfs_mount_point }}"
+        fstype: nfs
+        opts: "rw,hard,intr,noatime"
+        state: mounted
+
+    - name: Diagnóstico NFS - showmount
+      ansible.builtin.command: "showmount -e {{ truenas_nfs_server }}"
+      register: showmount_out
+      changed_when: false
+      failed_when: false
+
+    - name: Diagnóstico NFS - mount atual
+      ansible.builtin.command: "mount | grep {{ nfs_mount_point }}"
+      register: mount_out
+      changed_when: false
+      failed_when: false
+
+    - name: Diagnóstico NFS - teste de escrita
+      block:
+        - name: Criar arquivo de teste no NFS
+          ansible.builtin.copy:
+            dest: "{{ nfs_mount_point }}/.frigate_ansible_write_test"
+            content: "test"
+            mode: '0644'
+          register: nfs_write_test
+      rescue:
+        - name: Reportar falha de escrita no NFS
+          ansible.builtin.debug:
+            msg: "Falha ao escrever em {{ nfs_mount_point }}: {{ nfs_write_test.msg | default('erro desconhecido') }}"
+      always:
+        - name: Remover arquivo de teste (se existir)
+          ansible.builtin.file:
+            path: "{{ nfs_mount_point }}/.frigate_ansible_write_test"
+            state: absent
+          failed_when: false
+          changed_when: false
+
+    - name: Criar diretórios de dados do Frigate
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ frigate_media_dir }}"
+        - "{{ frigate_config_dir }}"
+
+    - name: Gerar configuração mínima do Frigate
+      ansible.builtin.copy:
+        dest: "{{ frigate_config_dir }}/config.yml"
+        content: |
+          mqtt:
+            enabled: {{ 'true' if mqtt_enable else 'false' }}
+            host: 127.0.0.1
+            user: {{ mqtt_user }}
+            password: {{ mqtt_password }}
+          detectors:
+            cpu1:
+              type: cpu
+          database:
+            path: /db/frigate.db
+          ffmpeg:
+            hwaccel_args: preset-vaapi # ajuste conforme hardware
+          record:
+            enabled: true
+            retain:
+              days: 7
+          cameras: {}
+        mode: '0644'
+
+    - name: Subir broker MQTT (opcional)
+      when: mqtt_enable
+      community.docker.docker_container:
+        name: mqtt
+        image: "{{ docker_mqtt_image }}"
+        restart_policy: unless-stopped
+        published_ports:
+          - "1883:1883"
+        volumes:
+          - "/etc/mosquitto:/mosquitto"
+        state: started
+
+    - name: Subir Frigate
+      community.docker.docker_container:
+        name: frigate
+        image: "{{ docker_frigate_image }}"
+        restart_policy: unless-stopped
+        privileged: false
+        env:
+          FRIGATE_CONFIG: "/config/config.yml"
+        published_ports:
+          - "5000:5000"   # UI
+          - "8554:8554"   # RTSP server
+          - "8555:8555/tcp"  # WebRTC TCP
+          - "8555:8555/udp"  # WebRTC UDP
+        volumes:
+          - "{{ frigate_config_dir }}:/config"
+          - "{{ frigate_media_dir }}:/media/frigate"
+          - "/var/lib/frigate:/db"
+        devices: []  # adicione VAAPI/NVIDIA/Coral se disponível
+        state: started
+
+  post_tasks:
+    - name: Mostrar endpoints do Frigate
+      ansible.builtin.debug:
+        msg: "Frigate rodando em http://{{ hostvars[inventory_hostname].ansible_default_ipv4.address | default('dev-host') }}:5000"
+
+# Observações:
+# - Ajuste hwaccel (VAAPI/NVIDIA/Coral) conforme seu hardware.
+# - Certifique-se que o TrueNAS exporta NFS para o dataset dev (truenas_nfs_export).
+# - Movimente secrets (mqtt_password) para vault.
+# - Se preferir Docker Compose, posso trocar por community.docker.docker_compose.
